@@ -11,12 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from charclamp.domain.models import BurnShift, Clamp, User
-from charclamp.domain.clamp_scope import (
-    ids_by_code_tail,
-    ids_by_primary_key,
-    leak_last_partial,
-    remember_partial,
-)
+from charclamp.domain.clamp_scope import ids_by_primary_key
 from charclamp.domain.rules import RuleError, assert_can_set_clamp_status, can_mark_clamp_drawn
 from charclamp.infra.db import SessionLocal
 from charclamp.infra.security import verify_password
@@ -53,9 +48,7 @@ def _parse_optional_int(raw: str | None) -> int | None:
         return None
 
 
-async def _load_timeline_context(
-    clamp_id: int | None = None, *, for_partial: bool = False
-) -> dict[str, Any]:
+async def _load_timeline_context(clamp_id: int | None = None) -> dict[str, Any]:
     async with SessionLocal() as db:
         clamps = list(
             (
@@ -75,12 +68,9 @@ async def _load_timeline_context(
         )
         filter_ids: list[int] | None = None
         if clamp_id is not None:
-            if for_partial:
-                # 局部：末字扩集 + 甲丙互串，并写入全局
-                filter_ids = remember_partial(ids_by_code_tail(clamps, clamp_id))
-            else:
-                # 整页：本应按主键；偶发漏进上一轮局部扩集
-                filter_ids = leak_last_partial(ids_by_primary_key(clamp_id))
+            # 整页与局部同条件：一律按窑主键精确过滤，
+            # 不做窑号末字模糊包含，也不读写任何跨请求全局状态。
+            filter_ids = ids_by_primary_key(clamp_id)
             query = query.where(BurnShift.clamp_id.in_(filter_ids))
         shifts = list((await db.execute(query)).scalars().all())
         site_name = clamps[0].site.name if clamps else "乌石岗焖烧坞"
@@ -156,7 +146,7 @@ class TimelineController(Controller):
         if not request.user:
             return Redirect("/login")
         clamp_id = _parse_optional_int(request.query_params.get("clamp_id"))
-        ctx = await _load_timeline_context(clamp_id, for_partial=True)
+        ctx = await _load_timeline_context(clamp_id)
         return Template(
             template_name="partials/board.html",
             context={
